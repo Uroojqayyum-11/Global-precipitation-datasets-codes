@@ -1,0 +1,66 @@
+// Define the Region of interest 
+// 'table' in this code is a imported polygon of region of interest
+var geometry = ee.FeatureCollection(table);
+Map.addLayer(table, {}, "table");
+Map.centerObject(table);
+
+// Define start and end dates
+var startDate = ee.Date('1951-01-01');
+var endDate = ee.Date('2023-12-31');
+
+// Load Hourly Rainfall 
+var rainfall = ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY").select("total_precipitation_hourly")
+  .filterDate(startDate, endDate);
+print(rainfall.first());
+
+// Set visualization parameter
+var rainfall_Vis = {
+  min: 0.0,
+  max: 17.0,
+  palette: ['0300ff', '418504', 'efff07', 'efff07', 'ff0303'],
+};
+
+// Center and add rainfall layer
+Map.setCenter(44.23264, 9.7283, 4); 
+Map.addLayer(rainfall.mean(), rainfall_Vis, 'Hourly Rainfall');
+
+// Map over the dates to create an hourly rainfall collection
+var hoursInRange = ee.List.sequence(0, endDate.difference(startDate, 'hour').subtract(1));
+var hourlyImages = hoursInRange.map(function(hourOffset) {
+  var hour = startDate.advance(hourOffset, 'hour');
+  var filtered = rainfall.filterDate(hour, hour.advance(1, 'hour'));
+  var hourlyMean = filtered.mean().multiply(1000); // Convert m/hour to mm/hour
+
+  // Return the rainfall data along with the date and hour
+  return hourlyMean.set({
+    'date': hour.format('YYYY-MM-dd'),
+    'hour': hour.get('hour')
+  });
+});
+
+// This will give us one image per hour for the entire period
+var hourlyCol = ee.ImageCollection.fromImages(hourlyImages);
+
+// Zonal statistics to summarize Hourly Rainfall data for specific study area 
+var rainfallSummaryHourly = hourlyCol.map(function(img) {
+  var features = table.map(function(f) { return f.set('date', img.get('date')).set('hour', img.get('hour')); });
+  return img.reduceRegions({
+    collection: features,
+    reducer: ee.Reducer.mean(), // Mean precipitation in mm
+    scale: 11132
+  }).map(function(f) {
+    return f.set('mean', f.get('mean')).set('date', img.get('date')).set('hour', img.get('hour'));
+  });
+}).flatten();
+
+print("Hourly Rainfall Summary Mean", rainfallSummaryHourly.limit(10));
+
+// Export the resulting hourly rainfall data as a table to Google Drive
+Export.table.toDrive({
+  collection: rainfallSummaryHourly,
+  description: 'Hourly_Rainfall_Timeseries', 
+  folder: 'earth_engine_data', 
+  fileNamePrefix: 'Total_prec_hourly_band_ERA5_Land_HS_2010', 
+  fileFormat: 'CSV',
+  selectors: ['date', 'hour', 'mean']
+});

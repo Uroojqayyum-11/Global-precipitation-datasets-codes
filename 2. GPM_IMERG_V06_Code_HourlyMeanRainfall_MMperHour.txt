@@ -1,0 +1,66 @@
+// This code gives mean hourly GPM rainfall values in mm/hr.
+
+// Define the Region of interest 
+// 'table' in this code is a imported polygon of region of interest
+var geometry = ee.FeatureCollection(table);
+Map.addLayer(table, {}, "table");
+Map.centerObject(table);
+
+// Define start and end dates
+var startDate = ee.Date('2000-06-01');
+var endDate = ee.Date('2024-05-31');
+
+// Load Rainfall 
+var rainfall = ee.ImageCollection("NASA/GPM_L3/IMERG_V06").select("precipitationCal")
+  .filterDate(startDate, endDate); 
+
+// Set visualization parameter
+var rainfall_Vis = {
+  min: 0.0,
+  max: 50.0,
+  palette: ['0300ff', '418504', 'efff07', 'efff07', 'ff0303'],
+};
+
+// Center and add rainfall layer
+Map.setCenter(44.23264, 9.7283, 4); // Center on Dararweyne
+Map.addLayer(rainfall.mean(), rainfall_Vis, 'Rainfall');
+
+// Map over the dates to create an hourly rainfall collection
+var hoursInRange = ee.List.sequence(0, endDate.difference(startDate, 'hour').subtract(1));
+var hourlyImages = hoursInRange.map(function(hourOffset) {
+  var hour = startDate.advance(hourOffset, 'hour');
+  var filtered = rainfall.filterDate(hour, hour.advance(1, 'hour'));
+  var hourlyMean = filtered.mean(); // Total precipitation in mm/hr
+
+  // Return the rainfall data along with the date and hour
+  return hourlyMean.set({
+    'datetime': hour.format('YYYY-MM-dd HH:mm:ss')
+  });
+});
+
+// This will give us one image per hour for the entire period
+var hourlyCol = ee.ImageCollection.fromImages(hourlyImages);
+
+// Zonal statistics to summarize Rainfall data for specific study area 
+var rainfallSummary = hourlyCol.map(function(img) {
+  var features = table.map(function(f) { return f.set('datetime', img.get('datetime')); });
+  return img.reduceRegions({
+    collection: features,
+    reducer: ee.Reducer.mean(), // Mean precipitation in mm/hr
+    scale: 11132
+  }).map(function(f) {
+    return f.set('mean', f.get('mean')).set('datetime', img.get('datetime'));
+  });
+}).flatten();
+
+print("Rainfall Summary Mean", rainfallSummary.limit(10));
+
+// Export the resulting rainfall data as a table to Google Drive
+Export.table.toDrive({
+  collection: rainfallSummary,
+  description: 'Rainfall_Timeseries_Hourly', 
+  folder: 'earth_engine_data', 
+  fileNamePrefix: 'GPM_Rainfall_DWBasin_2000_Hourly', 
+  fileFormat: 'CSV',
+  selectors: ['datetime', 'mean']
+});
